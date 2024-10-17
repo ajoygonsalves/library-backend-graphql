@@ -109,7 +109,7 @@ type Author {
 type Book {
   title: String!
   published: Int!
-  author: String
+  author: Author!
   id: ID!
   genres: [String!]
 }
@@ -140,13 +140,21 @@ const resolvers = {
     bookCount: () => books.length,
     authorCount: () => authors.length,
     allBooks: (root, args) => {
-      if (Object.keys(args).length === 0) {
-        return books;
-      }
+      let filteredBooks = books;
+
       if (args.genre) {
-        return books.filter((book) => book.genres.includes(args.genre));
+        filteredBooks = filteredBooks.filter((book) =>
+          book.genres.includes(args.genre)
+        );
       }
-      return books.filter((book) => book.author === args.name);
+
+      if (args.name) {
+        filteredBooks = filteredBooks.filter(
+          (book) => book.author === args.name
+        );
+      }
+
+      return filteredBooks;
     },
     allAuthors: () => authors,
   },
@@ -155,17 +163,35 @@ const resolvers = {
       return books.filter((book) => book.author === root.name).length;
     },
   },
+  Book: {
+    author: (root) => {
+      return authors.find((author) => author.name === root.author);
+    },
+  },
   Mutation: {
     addBook: (root, args) => {
-      const book = { ...args, id: uuidv4() };
-      books = books.concat(book);
-      return book;
+      let author = authors.find((author) => author.name === args.author);
+
+      if (!author) {
+        author = {
+          name: args.author,
+          id: uuidv4(),
+          born: null,
+        };
+        authors = authors.concat(author);
+      }
+
+      const newBook = { ...args, id: uuidv4() };
+      books = books.concat(newBook);
+      return newBook;
     },
     editAuthor: (root, args) => {
       const author = authors.find((author) => author.name === args.name);
+
       if (!author) {
         return null;
       }
+
       author.born = args.setBornTo;
       return author;
     },
