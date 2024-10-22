@@ -1,124 +1,57 @@
+require("dotenv").config();
 const { ApolloServer } = require("@apollo/server");
 const { startStandaloneServer } = require("@apollo/server/standalone");
-const { v4: uuidv4 } = require("uuid");
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
+const Author = require("./models/Author");
+const Book = require("./models/Book");
+const User = require("./schemas/User");
+const config = require("./utils/config");
+const { GraphQLError } = require("graphql");
 
-let authors = [
-  {
-    name: "Robert Martin",
-    id: "afa51ab0-344d-11e9-a414-719c6709cf3e",
-    born: 1952,
-  },
-  {
-    name: "Martin Fowler",
-    id: "afa5b6f0-344d-11e9-a414-719c6709cf3e",
-    born: 1963,
-  },
-  {
-    name: "Fyodor Dostoevsky",
-    id: "afa5b6f1-344d-11e9-a414-719c6709cf3e",
-    born: 1821,
-  },
-  {
-    name: "Joshua Kerievsky", // birthyear not known
-    id: "afa5b6f2-344d-11e9-a414-719c6709cf3e",
-  },
-  {
-    name: "Sandi Metz", // birthyear not known
-    id: "afa5b6f3-344d-11e9-a414-719c6709cf3e",
-  },
-];
+// Load environment variables
+const { MONGO_URI } = process.env;
+const JWT_SECRET = "NEED_HERE_A_SECRET_KEY";
 
-/*
- * Suomi:
- * Saattaisi olla järkevämpää assosioida kirja ja sen tekijä tallettamalla kirjan yhteyteen tekijän nimen sijaan tekijän id
- * Yksinkertaisuuden vuoksi tallennamme kuitenkin kirjan yhteyteen tekijän nimen
- *
- * English:
- * It might make more sense to associate a book with its author by storing the author's id in the context of the book instead of the author's name
- * However, for simplicity, we will store the author's name in connection with the book
- *
- * Spanish:
- * Podría tener más sentido asociar un libro con su autor almacenando la id del autor en el contexto del libro en lugar del nombre del autor
- * Sin embargo, por simplicidad, almacenaremos el nombre del autor en conexión con el libro
- */
+// Connect to MongoDB
+const connectDB = async () => {
+  await mongoose.connect(MONGO_URI);
+  console.log("connected to MongoDB");
+};
 
-let books = [
-  {
-    title: "Clean Code",
-    published: 2008,
-    author: "Robert Martin",
-    id: "afa5b6f4-344d-11e9-a414-719c6709cf3e",
-    genres: ["refactoring"],
-  },
-  {
-    title: "Agile software development",
-    published: 2002,
-    author: "Robert Martin",
-    id: "afa5b6f5-344d-11e9-a414-719c6709cf3e",
-    genres: ["agile", "patterns", "design"],
-  },
-  {
-    title: "Refactoring, edition 2",
-    published: 2018,
-    author: "Martin Fowler",
-    id: "afa5de00-344d-11e9-a414-719c6709cf3e",
-    genres: ["refactoring"],
-  },
-  {
-    title: "Refactoring to patterns",
-    published: 2008,
-    author: "Joshua Kerievsky",
-    id: "afa5de01-344d-11e9-a414-719c6709cf3e",
-    genres: ["refactoring", "patterns"],
-  },
-  {
-    title: "Practical Object-Oriented Design, An Agile Primer Using Ruby",
-    published: 2012,
-    author: "Sandi Metz",
-    id: "afa5de02-344d-11e9-a414-719c6709cf3e",
-    genres: ["refactoring", "design"],
-  },
-  {
-    title: "Crime and punishment",
-    published: 1866,
-    author: "Fyodor Dostoevsky",
-    id: "afa5de03-344d-11e9-a414-719c6709cf3e",
-    genres: ["classic", "crime"],
-  },
-  {
-    title: "Demons",
-    published: 1872,
-    author: "Fyodor Dostoevsky",
-    id: "afa5de04-344d-11e9-a414-719c6709cf3e",
-    genres: ["classic", "revolution"],
-  },
-];
-
-/*
-  you can remove the placeholder query once your first one has been implemented 
-*/
-
+// Define GraphQL type definitions
 const typeDefs = `
-type Author {
-  name: String!
-  id: String!
-  born: Int
-  bookCount: Int!
-}
+  type User {
+    username: String!
+    favoriteGenre: String!
+    id: ID!
+  }
 
-type Book {
-  title: String!
-  published: Int!
-  author: Author!
-  id: ID!
-  genres: [String!]
-}
+  type Token {
+    value: String!
+  }
+
+  type Author {
+    name: String!
+    id: ID!
+    born: Int
+    bookCount: Int!
+  }
+
+  type Book {
+    title: String!
+    published: Int!
+    author: Author!
+    id: ID!
+    genres: [String!]!
+  }
 
   type Query {
     bookCount: Int!
     authorCount: Int!
-    allBooks(name: String, genre: String): [Book!]
-    allAuthors: [Author!]
+    allBooks(author: String, genre: String): [Book!]!
+    allAuthors: [Author!]!
+    me: User
   }
 
   type Mutation {
@@ -132,79 +65,157 @@ type Book {
       name: String!
       setBornTo: Int!
     ): Author
+    createUser(
+      username: String!
+      favoriteGenre: String!
+    ): User
+    login(
+      username: String!
+      password: String!
+    ): Token
   }
 `;
 
+// Define GraphQL resolvers
 const resolvers = {
   Query: {
-    bookCount: () => books.length,
-    authorCount: () => authors.length,
-    allBooks: (root, args) => {
-      let filteredBooks = books;
-
+    bookCount: async () => Book.collection.countDocuments(),
+    authorCount: async () => Author.collection.countDocuments(),
+    allBooks: async (root, args) => {
+      let filter = {};
       if (args.genre) {
-        filteredBooks = filteredBooks.filter((book) =>
-          book.genres.includes(args.genre)
-        );
+        filter.genres = { $in: [args.genre] };
       }
-
       if (args.name) {
-        filteredBooks = filteredBooks.filter(
-          (book) => book.author === args.name
-        );
+        const author = await Author.findOne({ name: args.name });
+        if (author) {
+          filter.author = author._id;
+        }
       }
-
-      return filteredBooks;
+      return Book.find(filter).populate("author");
     },
-    allAuthors: () => authors,
-  },
-  Author: {
-    bookCount: (root, args) => {
-      return books.filter((book) => book.author === root.name).length;
+    allAuthors: async () => {
+      const authors = await Author.find({});
+      const books = await Book.find({});
+      return authors.map((author) => ({
+        name: author.name,
+        id: author._id,
+        born: author.born,
+        bookCount: books.filter(
+          (book) => book.author.toString() === author._id.toString()
+        ).length,
+      }));
     },
-  },
-  Book: {
-    author: (root) => {
-      return authors.find((author) => author.name === root.author);
+    me: (root, args, context) => {
+      return context.currentUser;
     },
   },
   Mutation: {
-    addBook: (root, args) => {
-      let author = authors.find((author) => author.name === args.author);
-
-      if (!author) {
-        author = {
-          name: args.author,
-          id: uuidv4(),
-          born: null,
-        };
-        authors = authors.concat(author);
+    addBook: async (root, args, context) => {
+      if (!context.currentUser) {
+        throw new GraphQLError("not authenticated", {
+          extensions: { code: "UNAUTHENTICATED" },
+        });
       }
-
-      const newBook = { ...args, id: uuidv4() };
-      books = books.concat(newBook);
-      return newBook;
+      try {
+        let author = await Author.findOne({ name: args.author });
+        if (!author) {
+          author = new Author({ name: args.author });
+          await author.save();
+        }
+        const book = new Book({ ...args, author: author._id });
+        await book.save();
+        return book.populate("author");
+      } catch (error) {
+        throw new GraphQLError(error.message, {
+          extensions: { code: "BAD_USER_INPUT", invalidArgs: args },
+        });
+      }
     },
-    editAuthor: (root, args) => {
-      const author = authors.find((author) => author.name === args.name);
+    editAuthor: async (root, args, context) => {
+      if (!context.currentUser) {
+        throw new GraphQLError("not authenticated", {
+          extensions: { code: "UNAUTHENTICATED" },
+        });
+      }
+      try {
+        const author = await Author.findOne({ name: args.name });
+        if (!author) {
+          throw new GraphQLError("Author not found", {
+            extensions: { code: "BAD_USER_INPUT", invalidArgs: args.name },
+          });
+        }
+        author.born = args.setBornTo;
+        await author.save();
+        return author;
+      } catch (error) {
+        throw new GraphQLError(error.message, {
+          extensions: { code: "BAD_USER_INPUT", invalidArgs: args },
+        });
+      }
+    },
+    createUser: async (root, args) => {
+      const user = new User({
+        username: args.username,
+        favoriteGenre: args.favoriteGenre,
+      });
 
-      if (!author) {
-        return null;
+      return user.save().catch((error) => {
+        throw new GraphQLError(error.message, {
+          extensions: { code: "BAD_USER_INPUT", invalidArgs: args },
+        });
+      });
+    },
+    login: async (root, args) => {
+      const user = await User.findOne({ username: args.username });
+
+      if (!user || args.password !== "secred") {
+        throw new GraphQLError("wrong credentials", {
+          extensions: { code: "BAD_USER_INPUT", invalidArgs: args },
+        });
       }
 
-      author.born = args.setBornTo;
-      return author;
+      const userForToken = {
+        username: user.username,
+        id: user._id,
+      };
+
+      return { value: jwt.sign(userForToken, JWT_SECRET) };
+    },
+  },
+  Author: {
+    bookCount: async (parent) => {
+      return Book.countDocuments({ author: parent.id });
+    },
+  },
+  Book: {
+    author: async (parent) => {
+      return Author.findById(parent.author);
     },
   },
 };
 
+// Initialize Apollo Server
 const server = new ApolloServer({
   typeDefs,
   resolvers,
 });
 
-startStandaloneServer(server, {
-  listen: { port: 4000 },
-}).then(({ url }) => {
+// Start the server
+async function startServer() {
+  await connectDB();
+  const { url } = await startStandaloneServer(server, {
+    listen: { port: 4000 },
+    context: async ({ req }) => {
+      const auth = req ? req.headers.authorization : null;
+      if (auth && auth.toLowerCase().startsWith("bearer ")) {
+        const decodedToken = jwt.verify(auth.substring(7), JWT_SECRET);
+        const currentUser = await User.findById(decodedToken.id);
+        return { currentUser };
+      }
+    },
+  });
   console.log(`Server ready at ${url}`);
-});
+}
+
+startServer();
